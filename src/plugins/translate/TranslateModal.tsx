@@ -22,6 +22,7 @@ import { Margins } from "@utils/margins";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalProps, ModalRoot } from "@utils/modal";
 import { Button, Forms, SearchableSelect, SelectedChannelStore, useMemo, useState } from "@webpack/common";
 
+import { startContinuousTranslation, stopContinuousTranslation } from "./index";
 import { settings } from "./settings";
 import { cl, getLanguages } from "./utils";
 
@@ -88,6 +89,7 @@ function AutoTranslateReceivedToggle() {
             settings.store.autoTranslateChannelId = null;
             settings.store.autoTranslateTimestamp = null;
             setTimeRemaining(null);
+            stopContinuousTranslation();
         } else {
             setTimeRemaining(remaining);
         }
@@ -102,15 +104,22 @@ function AutoTranslateReceivedToggle() {
 
     const toggleAutoTranslateReceived = () => {
         const newValue = !isActive;
-        settings.store.autoTranslateReceived = newValue;
+
         if (newValue) {
-            settings.store.autoTranslateChannelId = SelectedChannelStore.getChannelId();
+            const channelId = SelectedChannelStore.getChannelId();
+            settings.store.autoTranslateReceived = newValue;
+            settings.store.autoTranslateChannelId = channelId;
             settings.store.autoTranslateTimestamp = Date.now();
+            setTimeRemaining(10 * 60 * 1000);
+
+            startContinuousTranslation(channelId);
         } else {
+            settings.store.autoTranslateReceived = newValue;
             settings.store.autoTranslateChannelId = null;
             settings.store.autoTranslateTimestamp = null;
+            setTimeRemaining(null);
+            stopContinuousTranslation();
         }
-        setTimeRemaining(newValue ? 10 * 60 * 1000 : null);
     };
 
     const formatTime = (ms: number) => {
@@ -125,7 +134,7 @@ function AutoTranslateReceivedToggle() {
                 Auto-Translate This Channel
             </Forms.FormTitle>
             <Forms.FormText className={Margins.bottom8}>
-                Automatically translate all incoming messages in the current channel for 10 minutes
+                Continuously translate all visible messages as you scroll for 10 minutes
             </Forms.FormText>
             <Button
                 color={isActive ? Button.Colors.RED : Button.Colors.BRAND}
@@ -138,7 +147,6 @@ function AutoTranslateReceivedToggle() {
         </section>
     );
 }
-
 
 export function TranslateModal({ rootProps }: { rootProps: ModalProps; }) {
     return (

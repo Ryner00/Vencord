@@ -73,6 +73,31 @@ export async function translate(kind: "received" | "sent", text: string): Promis
     }
 }
 
+export async function translateBatch(kind: "received" | "sent", texts: string[]): Promise<TranslationValue[]> {
+    if (texts.length === 0) return [];
+
+    const sourceLang = settings.store[`${kind}Input`];
+    const targetLang = settings.store[`${kind}Output`];
+
+    try {
+        if (IS_WEB || settings.store.service === "google") {
+            return await Promise.all(texts.map(text => googleTranslate(text, sourceLang, targetLang)));
+        } else {
+            return await deeplTranslateBatch(texts, sourceLang, targetLang);
+        }
+    } catch (e) {
+        const userMessage = typeof e === "string"
+            ? e
+            : "Batch translation failed. If this issue persists, please check the console or ask for help in the support server.";
+
+        showToast(userMessage, Toasts.Type.FAILURE);
+
+        throw e instanceof Error
+            ? e
+            : new Error(userMessage);
+    }
+}
+
 async function googleTranslate(text: string, sourceLang: string, targetLang: string): Promise<TranslationValue> {
     const url = "https://translate-pa.googleapis.com/v1/translate?" + new URLSearchParams({
         "params.client": "gtx",
@@ -120,7 +145,6 @@ async function deeplTranslate(text: string, sourceLang: string, targetLang: stri
         return fallbackToGoogle(text, sourceLang, targetLang);
     }
 
-    // CORS jumpscare
     const { status, data } = await Native.makeDeeplTranslateRequest(
         settings.store.service === "deepl-pro",
         settings.store.deeplApiKey,
@@ -152,4 +176,44 @@ async function deeplTranslate(text: string, sourceLang: string, targetLang: stri
         sourceLanguage: DeeplLanguages[src] ?? src,
         text: translations[0].text
     };
+}
+
+async function deeplTranslateBatch(texts: string[], sourceLang: string, targetLang: string): Promise<TranslationValue[]> {
+    if (!settings.store.deeplApiKey) {
+        showToast("DeepL API key is not set. Resetting to Google", Toasts.Type.FAILURE);
+        settings.store.service = "google";
+        resetLanguageDefaults();
+        return await Promise.all(texts.map(text => fallbackToGoogle(text, sourceLang, targetLang)));
+    }
+
+    const { status, data } = await Native.makeDeeplTranslateRequest(
+        settings.store.service === "deepl-pro",
+        settings.store.deeplApiKey,
+        JSON.stringify({
+            text: texts,
+            target_lang: targetLang,
+            source_lang: sourceLang.split("-")[0]
+        })
+    );
+
+    switch (status) {
+        case 200:
+            break;
+        case -1:
+            throw "Failed to connect to DeepL API: " + data;
+        case 403:
+            throw "Invalid DeepL API key or version";
+        case 456:
+            showDeeplApiQuotaToast();
+            return await Promise.all(texts.map(text => fallbackToGoogle(text, sourceLang, targetLang)));
+        default:
+            throw new Error(`Failed to batch translate (${sourceLang} -> ${targetLang})\n${status} ${data}`);
+    }
+
+    const { translations }: DeeplData = JSON.parse(data);
+
+    return translations.map(translation => ({
+        sourceLanguage: DeeplLanguages[translation.detected_source_language] ?? translation.detected_source_language,
+        text: translation.text
+    }));
 }

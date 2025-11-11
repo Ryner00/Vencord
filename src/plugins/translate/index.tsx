@@ -22,12 +22,12 @@ import { findGroupChildrenByChildId, NavContextMenuPatchCallback } from "@api/Co
 import { Devs } from "@utils/constants";
 import definePlugin from "@utils/types";
 import { Message } from "@vencord/discord-types";
-import { ChannelStore, Menu, SelectedChannelStore } from "@webpack/common";
+import { ChannelStore, Menu, MessageStore, SelectedChannelStore } from "@webpack/common";
 
 import { settings } from "./settings";
 import { setShouldShowTranslateEnabledTooltip, TranslateChatBarIcon, TranslateIcon } from "./TranslateIcon";
 import { handleTranslate, TranslationAccessory } from "./TranslationAccessory";
-import { translate } from "./utils";
+import { translate, translateBatch } from "./utils";
 
 const messageCtxPatch: NavContextMenuPatchCallback = (children, { message }: { message: Message; }) => {
     const content = getMessageContent(message);
@@ -50,10 +50,7 @@ const messageCtxPatch: NavContextMenuPatchCallback = (children, { message }: { m
 };
 
 
-function getMessageContent(message: Message) {
-    // Message snapshots is an array, which allows for nested snapshots, which Discord does not do yet.
-    // no point collecting content or rewriting this to render in a certain way that makes sense
-    // for something currently impossible.
+export function getMessageContent(message: Message) {
     return message.content
         || message.messageSnapshots?.[0]?.message.content
         || message.embeds?.find(embed => embed.type === "auto_moderation_message")?.rawDescription || "";
@@ -61,6 +58,9 @@ function getMessageContent(message: Message) {
 
 let tooltipTimeout: any;
 let autoTranslateTimeout: any;
+let visibilityCheckInterval: any;
+let scrollDebounceTimeout: any;
+const translatedMessages = new Set<string>();
 
 function isAutoTranslateActive(): boolean {
     const now = Date.now();
@@ -75,6 +75,100 @@ function isAutoTranslateActive(): boolean {
     return true;
 }
 
+async function translateVisibleMessages(channelId: string): Promise<void> {
+    const messageElements = document.querySelectorAll(`[id^="chat-messages-${channelId}-"]`);
+    const visibleMessageIds: string[] = [];
+
+    messageElements.forEach(el => {
+        const rect = el.getBoundingClientRect();
+        const isVisible = rect.top >= 0 && rect.bottom <= window.innerHeight;
+
+        if (isVisible) {
+            const id = el.id.replace(`chat-messages-${channelId}-`, "");
+            if (id && !translatedMessages.has(id)) {
+                visibleMessageIds.push(id);
+            }
+        }
+    });
+
+    if (visibleMessageIds.length === 0) return;
+
+    const messages = MessageStore.getMessages(channelId);
+    if (!messages) return;
+
+    const messagesToTranslate: Array<{ id: string; content: string }> = [];
+
+    for (const messageId of visibleMessageIds) {
+        const message = messages.get(messageId);
+        if (!message) continue;
+
+        const content = getMessageContent(message);
+        if (!content) continue;
+
+        messagesToTranslate.push({ id: messageId, content });
+    }
+
+    if (messagesToTranslate.length === 0) return;
+
+    try {
+        const translations = await translateBatch(
+            "received",
+            messagesToTranslate.map(m => m.content)
+        );
+
+        for (let i = 0; i < messagesToTranslate.length; i++) {
+            const messageId = messagesToTranslate[i].id;
+            const translation = translations[i];
+
+            handleTranslate(messageId, translation);
+            translatedMessages.add(messageId);
+        }
+    } catch (e) {
+        console.error("Batch auto-translate failed:", e);
+    }
+}
+
+export function startContinuousTranslation(channelId: string): void {
+    stopContinuousTranslation();
+    translatedMessages.clear();
+
+    translateVisibleMessages(channelId);
+
+    visibilityCheckInterval = setInterval(() => {
+        if (!isAutoTranslateActive() || settings.store.autoTranslateChannelId !== channelId) {
+            stopContinuousTranslation();
+            return;
+        }
+        translateVisibleMessages(channelId);
+    }, 2000);
+
+    const chatScroller = document.querySelector('[class*="scrollerInner"]');
+    if (chatScroller) {
+        const handleScroll = () => {
+            if (!isAutoTranslateActive() || settings.store.autoTranslateChannelId !== channelId) return;
+
+            clearTimeout(scrollDebounceTimeout);
+            scrollDebounceTimeout = setTimeout(() => {
+                translateVisibleMessages(channelId);
+            }, 1000);
+        };
+
+        chatScroller.addEventListener("scroll", handleScroll);
+    }
+}
+
+export function stopContinuousTranslation(): void {
+    if (visibilityCheckInterval) {
+        clearInterval(visibilityCheckInterval);
+        visibilityCheckInterval = null;
+    }
+    if (scrollDebounceTimeout) {
+        clearTimeout(scrollDebounceTimeout);
+        scrollDebounceTimeout = null;
+    }
+    translatedMessages.clear();
+}
+
 export default definePlugin({
     name: "Translate",
     description: "Translate messages with Google Translate or DeepL",
@@ -82,6 +176,16 @@ export default definePlugin({
     settings,
     contextMenus: {
         "message": messageCtxPatch
+    },
+
+    start() {
+        if (isAutoTranslateActive() && settings.store.autoTranslateChannelId) {
+            startContinuousTranslation(settings.store.autoTranslateChannelId);
+        }
+    },
+
+    stop() {
+        stopContinuousTranslation();
     },
 
     flux: {
@@ -98,6 +202,7 @@ export default definePlugin({
             try {
                 const trans = await translate("received", content);
                 handleTranslate(message.id, trans);
+                translatedMessages.add(message.id);
             } catch (e) {
                 console.error("Auto-translate failed:", e);
             }
