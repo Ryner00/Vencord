@@ -20,7 +20,7 @@ import { Divider } from "@components/Divider";
 import { FormSwitch } from "@components/FormSwitch";
 import { Margins } from "@utils/margins";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalProps, ModalRoot } from "@utils/modal";
-import { Forms, SearchableSelect, useMemo } from "@webpack/common";
+import { Button, Forms, SearchableSelect, SelectedChannelStore, useMemo, useState } from "@webpack/common";
 
 import { settings } from "./settings";
 import { cl, getLanguages } from "./utils";
@@ -72,6 +72,73 @@ function AutoTranslateToggle() {
     );
 }
 
+function AutoTranslateReceivedToggle() {
+    const [timeRemaining, setTimeRemaining] = useState<number | null>(null);
+    const isActive = settings.use(["autoTranslateReceived"]).autoTranslateReceived;
+
+    const updateTimeRemaining = () => {
+        if (!isActive || !settings.store.autoTranslateTimestamp) {
+            setTimeRemaining(null);
+            return;
+        }
+        const elapsed = Date.now() - settings.store.autoTranslateTimestamp;
+        const remaining = Math.max(0, 10 * 60 * 1000 - elapsed);
+        if (remaining === 0) {
+            settings.store.autoTranslateReceived = false;
+            settings.store.autoTranslateChannelId = null;
+            settings.store.autoTranslateTimestamp = null;
+            setTimeRemaining(null);
+        } else {
+            setTimeRemaining(remaining);
+        }
+    };
+
+    useMemo(() => {
+        if (!isActive) return;
+        const interval = setInterval(updateTimeRemaining, 1000);
+        updateTimeRemaining();
+        return () => clearInterval(interval);
+    }, [isActive]);
+
+    const toggleAutoTranslateReceived = () => {
+        const newValue = !isActive;
+        settings.store.autoTranslateReceived = newValue;
+        if (newValue) {
+            settings.store.autoTranslateChannelId = SelectedChannelStore.getChannelId();
+            settings.store.autoTranslateTimestamp = Date.now();
+        } else {
+            settings.store.autoTranslateChannelId = null;
+            settings.store.autoTranslateTimestamp = null;
+        }
+        setTimeRemaining(newValue ? 10 * 60 * 1000 : null);
+    };
+
+    const formatTime = (ms: number) => {
+        const minutes = Math.floor(ms / 60000);
+        const seconds = Math.floor((ms % 60000) / 1000);
+        return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+    };
+
+    return (
+        <section className={Margins.bottom16}>
+            <Forms.FormTitle tag="h3">
+                Auto-Translate This Channel
+            </Forms.FormTitle>
+            <Forms.FormText className={Margins.bottom8}>
+                Automatically translate all incoming messages in the current channel for 10 minutes
+            </Forms.FormText>
+            <Button
+                color={isActive ? Button.Colors.RED : Button.Colors.BRAND}
+                onClick={toggleAutoTranslateReceived}
+            >
+                {isActive && timeRemaining !== null
+                    ? `Disable (${formatTime(timeRemaining)} remaining)`
+                    : "Enable for 10 minutes"}
+            </Button>
+        </section>
+    );
+}
+
 
 export function TranslateModal({ rootProps }: { rootProps: ModalProps; }) {
     return (
@@ -91,6 +158,10 @@ export function TranslateModal({ rootProps }: { rootProps: ModalProps; }) {
                         includeAuto={s.endsWith("Input")}
                     />
                 ))}
+
+                <Divider className={Margins.bottom16} />
+
+                <AutoTranslateReceivedToggle />
 
                 <Divider className={Margins.bottom16} />
 

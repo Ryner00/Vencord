@@ -22,7 +22,7 @@ import { findGroupChildrenByChildId, NavContextMenuPatchCallback } from "@api/Co
 import { Devs } from "@utils/constants";
 import definePlugin from "@utils/types";
 import { Message } from "@vencord/discord-types";
-import { ChannelStore, Menu } from "@webpack/common";
+import { ChannelStore, Menu, SelectedChannelStore } from "@webpack/common";
 
 import { settings } from "./settings";
 import { setShouldShowTranslateEnabledTooltip, TranslateChatBarIcon, TranslateIcon } from "./TranslateIcon";
@@ -60,6 +60,20 @@ function getMessageContent(message: Message) {
 }
 
 let tooltipTimeout: any;
+let autoTranslateTimeout: any;
+
+function isAutoTranslateActive(): boolean {
+    const now = Date.now();
+    const timestamp = settings.store.autoTranslateTimestamp;
+    if (!timestamp || !settings.store.autoTranslateReceived) return false;
+    if (now - timestamp > 10 * 60 * 1000) {
+        settings.store.autoTranslateReceived = false;
+        settings.store.autoTranslateChannelId = null;
+        settings.store.autoTranslateTimestamp = null;
+        return false;
+    }
+    return true;
+}
 
 export default definePlugin({
     name: "Translate",
@@ -68,6 +82,26 @@ export default definePlugin({
     settings,
     contextMenus: {
         "message": messageCtxPatch
+    },
+
+    flux: {
+        async MESSAGE_CREATE({ message, optimistic }) {
+            if (optimistic) return;
+            if (!isAutoTranslateActive()) return;
+
+            const currentChannelId = SelectedChannelStore.getChannelId();
+            if (settings.store.autoTranslateChannelId !== currentChannelId) return;
+
+            const content = getMessageContent(message);
+            if (!content) return;
+
+            try {
+                const trans = await translate("received", content);
+                handleTranslate(message.id, trans);
+            } catch (e) {
+                console.error("Auto-translate failed:", e);
+            }
+        }
     },
     // not used, just here in case some other plugin wants it or w/e
     translate,
