@@ -2,7 +2,7 @@ import { showNotification } from "@api/Notifications";
 import { definePluginSettings } from "@api/Settings";
 import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
-import { ChannelStore, UserStore } from "@webpack/common";
+import { ChannelStore, GuildStore, NavigationRouter, UserStore } from "@webpack/common";
 
 const settings = definePluginSettings({
     keywords: {
@@ -69,18 +69,33 @@ export default definePlugin({
             if (matchedKeywords.length === 0) return;
 
             const channel = ChannelStore.getChannel(message.channel_id);
-            const channelName = channel?.name || "Direct Message";
+            const guild = message.guild_id ? GuildStore.getGuild(message.guild_id) : null;
+
+            let title: string;
+            if (guild && channel) {
+                title = `Keyword in ${guild.name} > #${channel.name}`;
+            } else if (channel?.name) {
+                title = `Keyword in ${channel.name}`;
+            } else {
+                title = `Keyword in DM with ${message.author.username}`;
+            }
 
             const preview = settings.store.showPreview
                 ? message.content.substring(0, 100)
                 : `Contains: ${matchedKeywords.join(", ")}`;
 
             showNotification({
-                title: `Keyword in #${channelName}`,
+                title,
                 body: `${message.author.username}: ${preview}`,
                 icon: message.author.getAvatarURL?.(undefined, undefined, false),
                 permanent: false,
-                dismissOnClick: true
+                dismissOnClick: true,
+                onClick: () => {
+                    const channelPath = message.guild_id
+                        ? `/channels/${message.guild_id}/${message.channel_id}/${message.id}`
+                        : `/channels/@me/${message.channel_id}/${message.id}`;
+                    NavigationRouter.transitionTo(channelPath);
+                }
             });
         }
     }
